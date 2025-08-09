@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aiohttp.client import ClientSession
 import voluptuous as vol
+from aiohttp.client import ClientSession
+from homeassistant import config_entries, exceptions
+from homeassistant.core import HomeAssistant
 
 from aidot.client import AidotClient
 from aidot.const import (
@@ -16,8 +18,6 @@ from aidot.const import (
     CONF_USERNAME,
     SUPPORTED_COUNTRY_NAMES,
 )
-from homeassistant import config_entries, exceptions
-from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle aidot config flow."""
 
     VERSION = 1
-    CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
+    CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_PUSH
 
     def __init__(self) -> None:
         """Initialize the config flow."""

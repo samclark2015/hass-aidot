@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import logging
+from collections.abc import Mapping
 from typing import Any, cast
 
 from aiohttp.client import ClientSession
-
-from aidot.client import AidotClient
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+
+from aidot.client import AidotClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,9 +36,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     aidot_data["client"] = client
     aidot_data["products"] = entry.data["product_list"]
 
+    client.start_discover()
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    client.start_discover()
 
     return True
 

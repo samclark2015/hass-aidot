@@ -1,5 +1,6 @@
 """Support for Aidot lights."""
 
+import asyncio
 import ctypes
 import logging
 from typing import Any
@@ -28,6 +29,7 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "aidot"
 
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -41,7 +43,7 @@ async def async_setup_entry(
                 device["product"] = product
 
     async_add_entities(
-        AidotLight(hass, device_info, user_info)
+        AidotLight(hass, entry, device_info, user_info)
         for device_info in device_list
         if device_info["type"] == "light"
         and "aesKey" in device_info
@@ -52,9 +54,12 @@ async def async_setup_entry(
 class AidotLight(LightEntity):
     """Representation of a Aidot Wi-Fi Light."""
 
-    def __init__(self, hass: HomeAssistant, device, user_info) -> None:
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, device, user_info
+    ) -> None:
         """Initialize the light."""
         super().__init__()
+        self.entry = entry
         aidot_data = hass.data[DOMAIN]
         client: AidotClient = aidot_data.get("client")
 
@@ -80,6 +85,7 @@ class AidotLight(LightEntity):
         self._cct_min = 0
         self._cct_max = 0
         self.device_status: DeviceStatusData | None = None
+        self.recv_task: asyncio.Task | None = None
 
         supported_color_modes = set()
         if "product" in device and "serviceModules" in device["product"]:
@@ -106,32 +112,56 @@ class AidotLight(LightEntity):
             self._attr_color_mode = ColorMode.BRIGHTNESS
             self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
 
-
         self.lanCtrl = client.get_device_client(device)
-
-        # async def handle_event(event):
-        #     if not self.lanCtrl.connecting and not self.lanCtrl.connect_and_login:
-        #         await self.lanCtrl.connect(event.data["ipAddress"])
-        #         # self.pingtask = hass.loop.create_task(self.lanCtrl.ping_task())
-        #         # self.recvtask = hass.loop.create_task(self.lanCtrl.recvData())
-
-        # hass.bus.async_listen(device["id"], handle_event)
-
-        # hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self.release)
 
     async def async_added_to_hass(self):
         """Called when the entity is added to Home Assistant."""
+
         # await self.lanCtrl.connect(self.ip_address)
         # await self.lanCtrl.async_login()
-        await self.lanCtrl.async_wait_discovered()
-        await self.lanCtrl.async_login()
+        async def recv_task():
+            """Task to read status from the device."""
+            await self.lanCtrl.send_action({}, "getDevAttrReq")
+            while True:
+                try:
+                    self.device_status = await self.lanCtrl.read_status()
+                    _LOGGER.debug(
+                        "Device %s status updated: %s",
+                        self.device["name"],
+                        self.device_status,
+                    )
+                    await self.updateState()
+                except asyncio.CancelledError:
+                    _LOGGER.info(
+                        "recv_task cancelled for device: %s", self.device["name"]
+                    )
+                    break
+                except Exception as e:
+                    _LOGGER.error("Error reading status: %s", str(type(e)))
+                    await asyncio.sleep(5)
+
+        async def discovery_task():
+            try:
+                await self.lanCtrl.async_wait_discovered()
+                _LOGGER.info("%s added to Home Assistant", self.device["name"])
+                self.recv_task = self.entry.async_create_background_task(
+                    self.hass,
+                    recv_task(),
+                    f"aidot_recv_{self.device['id']}",
+                )
+            except asyncio.CancelledError:
+                pass
+
+        self.entry.async_create_background_task(
+            self.hass, discovery_task(), f"aidot_discovery_{self.device['id']}"
+        )
 
     async def async_will_remove_from_hass(self, event: Event):
         """Release task."""
-        # if hasattr(self, "pingtask") and self.pingtask is not None:
-        #     self.pingtask.cancel()
-        # if hasattr(self, "recvtask") and self.recvtask is not None:
-        #     self.recvtask.cancel()
+        await self.lanCtrl.close()
+        if self.recv_task is not None:
+            self.recv_task.cancel()
+            self.recv_task = None
 
     async def updateState(self):
         """Update the state of the entity."""
@@ -141,7 +171,11 @@ class AidotLight(LightEntity):
     @property
     def available(self):
         """Return True if entity is available."""
-        return self.lanCtrl.connect_and_login and self.device_status is not None and self.device_status.on
+        return (
+            self.lanCtrl.connect_and_login
+            and self.device_status is not None
+            and self.device_status.online
+        )
 
     @property
     def is_on(self) -> bool:
@@ -207,7 +241,9 @@ class AidotLight(LightEntity):
                 if cct < self._cct_min or cct > self._cct_max:
                     _LOGGER.error(
                         "Color temperature %s is out of range (%s-%s)",
-                        cct, self._cct_min, self._cct_max
+                        cct,
+                        self._cct_min,
+                        self._cct_max,
                     )
                     raise HomeAssistantError(
                         f"Color temperature {cct} is out of range ({self._cct_min}-{self._cct_max})"
@@ -233,15 +269,3 @@ class AidotLight(LightEntity):
                 "The device is not logged in or may not be on the local area network"
             )
         await self.lanCtrl.async_turn_off()
-
-    async def async_update(self) -> None:
-        """Update the state of the light."""
-        if self.lanCtrl.connect_and_login is False:
-            _LOGGER.error(
-                "The device is not logged in or may not be on the local area network"
-            )
-            raise HomeAssistantError(
-                "The device is not logged in or may not be on the local area network"
-            )
-        status = await self.lanCtrl.read_status()
-        self.device_status = status
