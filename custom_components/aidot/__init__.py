@@ -52,8 +52,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: AidotConfigEntry) -> bo
         # Clean up the client if it has cleanup methods
         try:
             # The AidotClient may have cleanup methods we should call
-            if hasattr(entry.runtime_data, "stop_discover"):
-                entry.runtime_data.stop_discover()
+            entry.runtime_data.stop_discover()
         except Exception as err:
             _LOGGER.debug("Error during client cleanup: %s", err)
 

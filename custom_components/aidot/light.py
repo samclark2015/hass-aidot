@@ -93,7 +93,7 @@ class AidotLight(LightEntity):
         # Initialize device status and client
         self.device_status: DeviceStatusData | None = None
         self.recv_task: asyncio.Task | None = None
-        self.lan_ctrl = client.get_device_client(device)
+        self.lan_client = client.get_device_client(device)
 
     def _setup_device_info(self) -> None:
         """Set up device information."""
@@ -122,7 +122,7 @@ class AidotLight(LightEntity):
         self._cct_min = 0
         self._cct_max = 0
 
-        product = self._device.get("product", {})
+        product: dict = self._device.get("product", {})
         service_modules = product.get("serviceModules", [])
 
         for service in service_modules:
@@ -153,10 +153,10 @@ class AidotLight(LightEntity):
 
         async def recv_task() -> None:
             """Task to read status from the device."""
-            await self.lan_ctrl.send_action({}, "getDevAttrReq")
+            await self.lan_client.send_action({}, "getDevAttrReq")
             while True:
                 try:
-                    self.device_status = await self.lan_ctrl.read_status()
+                    self.device_status = await self.lan_client.read_status()
                     _LOGGER.debug(
                         "Device %s status updated: %s",
                         self._device["name"],
@@ -164,7 +164,7 @@ class AidotLight(LightEntity):
                     )
                     await self._update_state()
                 except asyncio.CancelledError:
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "recv_task cancelled for device: %s", self._device["name"]
                     )
                     break
@@ -177,7 +177,7 @@ class AidotLight(LightEntity):
         async def discovery_task() -> None:
             """Task to wait for device discovery."""
             try:
-                await self.lan_ctrl.async_wait_discovered()
+                await self.lan_client.async_wait_discovered()
                 _LOGGER.info("%s added to Home Assistant", self._device["name"])
                 self.recv_task = self.entry.async_create_background_task(
                     self.hass,
@@ -193,7 +193,7 @@ class AidotLight(LightEntity):
 
     async def async_will_remove_from_hass(self) -> None:
         """Release task."""
-        await self.lan_ctrl.close()
+        await self.lan_client.close()
         if self.recv_task is not None:
             self.recv_task.cancel()
             self.recv_task = None
@@ -207,7 +207,7 @@ class AidotLight(LightEntity):
     def available(self) -> bool:
         """Return True if entity is available."""
         return (
-            self.lan_ctrl.connect_and_login
+            self.lan_client.connect_and_login
             and self.device_status is not None
             and self.device_status.online
         )
@@ -252,7 +252,7 @@ class AidotLight(LightEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
-        if not self.lan_ctrl.connect_and_login:
+        if not self.lan_client.connect_and_login:
             raise HomeAssistantError(
                 "The device is not logged in or may not be on the local area network"
             )
@@ -260,7 +260,7 @@ class AidotLight(LightEntity):
         brightness = kwargs.get(ATTR_BRIGHTNESS, 255)
 
         if ATTR_BRIGHTNESS in kwargs and brightness is not None:
-            await self.lan_ctrl.async_set_brightness(brightness)
+            await self.lan_client.async_set_brightness(brightness)
 
         if ATTR_COLOR_TEMP_KELVIN in kwargs:
             cct = kwargs.get(ATTR_COLOR_TEMP_KELVIN)
@@ -269,22 +269,22 @@ class AidotLight(LightEntity):
                     raise HomeAssistantError(
                         f"Color temperature {cct} is out of range ({self._cct_min}-{self._cct_max})"
                     )
-                await self.lan_ctrl.async_set_cct(cct)
+                await self.lan_client.async_set_cct(cct)
 
         if ATTR_RGBW_COLOR in kwargs:
             rgbw = kwargs.get(ATTR_RGBW_COLOR)
             if rgbw is not None:
                 if len(rgbw) != 4:
                     raise HomeAssistantError("RGBW color must be a tuple of 4 integers")
-                await self.lan_ctrl.async_set_rgbw(rgbw)
+                await self.lan_client.async_set_rgbw(rgbw)
 
         if not kwargs:
-            await self.lan_ctrl.async_turn_on()
+            await self.lan_client.async_turn_on()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
-        if not self.lan_ctrl.connect_and_login:
+        if not self.lan_client.connect_and_login:
             raise HomeAssistantError(
                 "The device is not logged in or may not be on the local area network"
             )
-        await self.lan_ctrl.async_turn_off()
+        await self.lan_client.async_turn_off()
