@@ -4,37 +4,41 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import logging
-from typing import Any
+from typing import Any, cast
 
-from aidot.discover import Discover
+from aiohttp.client import ClientSession
 
+from aidot.client import AidotClient
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 
-from .const import DOMAIN
-
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.LIGHT]
+DOMAIN = "aidot"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up aidot from a config entry."""
+    aidot_data = hass.data.setdefault(DOMAIN, {})
+    aidot_data["device_list"] = entry.data["device_list"]
+    aidot_data["login_response"] = login_info = entry.data[
+        "login_response"
+    ]
 
-    hass.data.setdefault(DOMAIN, {})["device_list"] = entry.data["device_list"]
-    hass.data.setdefault(DOMAIN, {})["login_response"] = entry.data["login_response"]
-    hass.data.setdefault(DOMAIN, {})["products"] = entry.data["product_list"]
-
-    def discover(devId, event: Mapping[str, Any]):
-        hass.bus.async_fire(devId, event)
-
-    await Discover().broadcast_message(
-        discover, hass.data[DOMAIN]["login_response"]["id"]
+    client = AidotClient(
+        ClientSession(),
+        token=login_info
     )
 
+    aidot_data["client"] = client
+    aidot_data["products"] = entry.data["product_list"]
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    client.start_discover()
 
     return True
 

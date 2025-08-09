@@ -5,22 +5,23 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aidot.login_control import LoginControl
+from aiohttp.client import ClientSession
 import voluptuous as vol
 
+from aidot.client import AidotClient
+from aidot.const import (
+    CONF_COUNTRY,
+    CONF_PASSWORD,
+    CONF_SELECTED_HOUSE,
+    CONF_USERNAME,
+    SUPPORTED_COUNTRY_NAMES,
+)
 from homeassistant import config_entries, exceptions
 from homeassistant.core import HomeAssistant
 
-from .const import (
-    CLOUD_SERVERS,
-    CONF_CHOOSE_HOUSE,
-    CONF_PASSWORD,
-    CONF_SERVER_COUNTRY,
-    CONF_USERNAME,
-    DOMAIN,
-)
-
 _LOGGER = logging.getLogger(__name__)
+
+DOMAIN = "aidot"
 
 
 async def validate_input(hass: HomeAssistant, data: dict) -> dict[str, Any]:
@@ -37,17 +38,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle aidot config flow."""
 
     VERSION = 1
-    CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_PUSH
+    CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
 
     def __init__(self) -> None:
         """Initialize the config flow."""
-        self.__login_control = LoginControl()
-        self.login_response: dict[Any, Any] = {}
-        self.accessToken = ""
-        self.house_list: list[Any] = []
-        self.device_list: list[Any] = []
-        self.product_list: list[Any] = []
-        self.selected_house: dict[Any, Any] = {}
+        self._client: AidotClient | None = None
+        self.login_response: dict[str, Any] = {}
+        self.house_list: list[dict[str, Any]] = []
 
     async def async_step_user(self, user_input=None):
         """Handle the initial step."""
@@ -55,25 +52,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 # get ContryCode
-                selected_contry_name = user_input[CONF_SERVER_COUNTRY]
-                selected_contry_obj = {}
-                for item in CLOUD_SERVERS:
-                    if item["name"] == selected_contry_name:
-                        selected_contry_obj = item
-                        break
-                self.__login_control.change_country_code(selected_contry_obj)
+                username = user_input[CONF_USERNAME]
+                password = user_input[CONF_PASSWORD]
+                country_name = user_input[CONF_COUNTRY]
 
-                self.login_response = await self.__login_control.async_post_login(
-                    self.hass,
-                    user_input[CONF_USERNAME],
-                    user_input[CONF_PASSWORD],
+                self._client = client = AidotClient(
+                    ClientSession(), country_name, username, password
                 )
-                self.accessToken = self.login_response["accessToken"]
+                self.login_response = await client.async_post_login()
 
-                # get houses
-                self.house_list = await self.__login_control.async_get_houses(
-                    self.hass, self.accessToken
-                )
+                # get house list
+                self.house_list = await client.async_get_houses()
 
                 return await self.async_step_choose_house()
 
@@ -88,13 +77,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is None:
             user_input = {}
 
-        counties_name = [item["name"] for item in CLOUD_SERVERS]
         DATA_SCHEMA = vol.Schema(
             {
                 vol.Required(
-                    CONF_SERVER_COUNTRY,
-                    default=user_input.get(CONF_SERVER_COUNTRY, "United States"),
-                ): vol.In(counties_name),
+                    CONF_COUNTRY,
+                    default=user_input.get(CONF_COUNTRY, "United States"),
+                ): vol.In(SUPPORTED_COUNTRY_NAMES),
                 vol.Required(
                     CONF_USERNAME, default=user_input.get(CONF_USERNAME, vol.UNDEFINED)
                 ): str,
@@ -114,21 +102,24 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is None:
             user_input = {}
 
-        if user_input.get(CONF_CHOOSE_HOUSE) is not None:
+        if (
+            user_input.get(CONF_SELECTED_HOUSE) is not None
+            and self._client is not None
+        ):
             # get all house name
             for item in self.house_list:
-                if item["name"] == user_input.get(CONF_CHOOSE_HOUSE):
+                if item["name"] == user_input.get(CONF_SELECTED_HOUSE):
                     self.selected_house = item
 
             # get device_list
-            self.device_list = await self.__login_control.async_get_devices(
-                self.hass, self.accessToken, self.selected_house["id"]
+            self.device_list = await self._client.async_get_devices(
+                self.selected_house["id"]
             )
 
             # get product_list
-            productIds = ",".join([item["productId"] for item in self.device_list])
-            self.product_list = await self.__login_control.async_get_products(
-                self.hass, self.accessToken, productIds
+            product_ids = ",".join([item["productId"] for item in self.device_list])
+            self.product_list = await self._client.async_get_products(
+                product_ids
             )
 
             title = self.login_response["username"] + " " + self.selected_house["name"]
@@ -153,8 +144,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Required(
-                    CONF_CHOOSE_HOUSE,
-                    default=user_input.get(CONF_CHOOSE_HOUSE, default_house["name"]),
+                    CONF_SELECTED_HOUSE,
+                    default=user_input.get(CONF_SELECTED_HOUSE, default_house["name"]),
                 ): vol.In(house_name_list)
             }
         )
