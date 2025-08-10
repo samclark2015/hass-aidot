@@ -1,8 +1,8 @@
 {
   "domain": "aidot",
-  "name": "AiDot Lights Local",
+  "name": "AiDot",
   "codeowners": [
-    "@s1eedz"
+    "@samclark2015"
   ],
   "config_flow": true,
   "dependencies": [],
@@ -13,6 +13,6 @@
     "python-aidot@git+https://github.com/samclark2015/python-aidot.git@main"
   ],
   "ssdp": [],
-  "version": "0.1.1",
+  "version": "0.2.0",
   "zeroconf": []
 }

@@ -27,5 +27,17 @@
                 "title": "Aidot"
             }
         }
+    },
+    "services": {
+        "refresh_devices": {
+            "name": "Refresh devices",
+            "description": "Refresh the list of discovered devices after login.",
+            "fields": {
+                "config_entry_id": {
+                    "name": "Config entry",
+                    "description": "The config entry to refresh devices for."
+                }
+            }
+        }
     }
 }

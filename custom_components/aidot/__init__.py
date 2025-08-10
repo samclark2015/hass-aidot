@@ -5,15 +5,21 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+import voluptuous as vol
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from aidot.client import AidotClient
 
 from .const import (
+    ATTR_CONFIG_ENTRY_ID,
     DATA_LOGIN_RESPONSE,
+    DOMAIN,
     PLATFORMS,
+    SERVICE_REFRESH_DEVICES,
 )
 
 if TYPE_CHECKING:
@@ -22,6 +28,74 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 type AidotConfigEntry = ConfigEntry[AidotClient]
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up the AiDot integration."""
+
+    async def async_refresh_devices(call: ServiceCall) -> None:
+        """Handle refresh devices service call."""
+        config_entry_id = call.data[ATTR_CONFIG_ENTRY_ID]
+
+        # Validate config entry exists and is loaded
+        entry = hass.config_entries.async_get_entry(config_entry_id)
+        if not entry:
+            raise ServiceValidationError(f"Config entry {config_entry_id} not found")
+
+        if entry.state != ConfigEntryState.LOADED:
+            raise ServiceValidationError(
+                f"Config entry {config_entry_id} is not loaded"
+            )
+
+        if entry.domain != DOMAIN:
+            raise ServiceValidationError(
+                f"Config entry {config_entry_id} is not for {DOMAIN}"
+            )
+
+        try:
+            client = entry.runtime_data
+
+            # Stop and restart discovery to refresh device list
+            _LOGGER.info(
+                "Stopping device discovery for config entry %s", config_entry_id
+            )
+            client.stop_discover()
+
+            _LOGGER.info(
+                "Starting device discovery for config entry %s", config_entry_id
+            )
+            client.start_discover()
+
+            # Reload platforms to pick up any new devices
+            _LOGGER.info("Reloading platforms for config entry %s", config_entry_id)
+            await hass.config_entries.async_reload(config_entry_id)
+
+            _LOGGER.info(
+                "Device discovery refresh completed for config entry %s",
+                config_entry_id,
+            )
+
+        except Exception as err:
+            _LOGGER.error(
+                "Failed to refresh devices for config entry %s: %s",
+                config_entry_id,
+                err,
+            )
+            raise HomeAssistantError(f"Failed to refresh devices: {err}") from err
+
+    # Register the service
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REFRESH_DEVICES,
+        async_refresh_devices,
+        schema=vol.Schema(
+            {
+                vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+            }
+        ),
+    )
+
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: AidotConfigEntry) -> bool:
@@ -57,3 +131,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: AidotConfigEntry) -> bo
             _LOGGER.debug("Error during client cleanup: %s", err)
 
     return unload_ok
+
+
+async def async_unload(hass: HomeAssistant) -> bool:
+    """Unload the integration and clean up services."""
+    # Remove services when the integration is completely unloaded
+    hass.services.async_remove(DOMAIN, SERVICE_REFRESH_DEVICES)
+    _LOGGER.debug("AiDot services removed")
+    return True
