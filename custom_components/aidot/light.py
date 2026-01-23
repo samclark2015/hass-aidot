@@ -19,6 +19,8 @@ from homeassistant.helpers.device_registry import (
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from aidot.const import CONF_CCT, CONF_DIMMING, CONF_ON_OFF, CONF_RGBW
+
 from .const import DOMAIN
 from .coordinator import AidotConfigEntry, AidotDeviceUpdateCoordinator
 
@@ -124,22 +126,18 @@ class AidotLight(CoordinatorEntity[AidotDeviceUpdateCoordinator], LightEntity):
         """Turn the light on."""
         self.coordinator.data.on = True
         self._attr_is_on = True
+        attrs = {CONF_ON_OFF: 1}
         if ATTR_BRIGHTNESS in kwargs:
-            await self.coordinator.device_client.async_set_brightness(
-                kwargs.get(ATTR_BRIGHTNESS, 255)
-            )
+            attrs[CONF_DIMMING] = kwargs[ATTR_BRIGHTNESS]
         if ATTR_COLOR_TEMP_KELVIN in kwargs:
             self._attr_color_mode = ColorMode.COLOR_TEMP
-            await self.coordinator.device_client.async_set_cct(
-                kwargs.get(ATTR_COLOR_TEMP_KELVIN)
-            )
+            attrs[CONF_CCT] = kwargs[ATTR_COLOR_TEMP_KELVIN]
         if ATTR_RGBW_COLOR in kwargs:
             self._attr_color_mode = ColorMode.RGBW
-            await self.coordinator.device_client.async_set_rgbw(
-                kwargs.get(ATTR_RGBW_COLOR)
-            )
-        if not kwargs:
-            await self.coordinator.device_client.async_turn_on()
+            rgbw = kwargs[ATTR_RGBW_COLOR]
+            final_rgbw = (rgbw[0] << 24) | (rgbw[1] << 16) | (rgbw[2] << 8) | rgbw[3]
+            attrs[CONF_RGBW] = final_rgbw
+        await self.coordinator.device_client.send_dev_attr(attrs)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
