@@ -1,5 +1,7 @@
 """Support for Aidot lights."""
 
+import asyncio
+import logging
 from typing import Any
 
 from homeassistant.components.light import (
@@ -10,6 +12,7 @@ from homeassistant.components.light import (
     LightEntity,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er  # 导入实体注册表
 from homeassistant.helpers.device_registry import (
     CONNECTION_NETWORK_MAC,
@@ -23,6 +26,8 @@ from aidot.const import CONF_CCT, CONF_DIMMING, CONF_ON_OFF, CONF_RGBW
 
 from .const import DOMAIN
 from .coordinator import AidotConfigEntry, AidotDeviceUpdateCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -119,8 +124,6 @@ class AidotLight(CoordinatorEntity[AidotDeviceUpdateCoordinator], LightEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
-        self.coordinator.data.on = True
-        self._attr_is_on = True
         attrs = {CONF_ON_OFF: 1}
         if ATTR_BRIGHTNESS in kwargs:
             attrs[CONF_DIMMING] = kwargs[ATTR_BRIGHTNESS]
@@ -132,10 +135,73 @@ class AidotLight(CoordinatorEntity[AidotDeviceUpdateCoordinator], LightEntity):
             rgbw = kwargs[ATTR_RGBW_COLOR]
             final_rgbw = (rgbw[0] << 24) | (rgbw[1] << 16) | (rgbw[2] << 8) | rgbw[3]
             attrs[CONF_RGBW] = final_rgbw
-        await self.coordinator.device_client.send_dev_attr(attrs)
+
+        # Optimistically update the UI state
+        self.coordinator.data.on = True
+        self._attr_is_on = True
+        self.async_write_ha_state()
+
+        try:
+            await self._send_command_with_retry(attrs)
+        except ConnectionError as err:
+            # Revert optimistic state on failure
+            self.coordinator.data.on = False
+            self._attr_is_on = False
+            self.async_write_ha_state()
+            _LOGGER.error(
+                "Failed to turn on %s after retry: %s",
+                self.entity_id,
+                err,
+            )
+            raise HomeAssistantError(f"Failed to turn on light: {err}") from err
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
+        # Optimistically update the UI state
         self.coordinator.data.on = False
         self._attr_is_on = False
-        await self.coordinator.device_client.async_turn_off()
+        self.async_write_ha_state()
+
+        try:
+            await self._send_command_with_retry({CONF_ON_OFF: 0})
+        except ConnectionError as err:
+            # Revert optimistic state on failure
+            self.coordinator.data.on = True
+            self._attr_is_on = True
+            self.async_write_ha_state()
+            _LOGGER.error(
+                "Failed to turn off %s after retry: %s",
+                self.entity_id,
+                err,
+            )
+            raise HomeAssistantError(f"Failed to turn off light: {err}") from err
+
+    async def _send_command_with_retry(self, attrs: dict[str, Any]) -> None:
+        """Send command with automatic retry on connection failure."""
+        max_retries = 2
+        retry_delay = 1.0
+
+        for attempt in range(max_retries + 1):
+            try:
+                await self.coordinator.device_client.send_dev_attr(attrs)
+                return  # Success!
+            except ConnectionError as err:
+                if attempt < max_retries:
+                    _LOGGER.warning(
+                        "Command failed for %s (attempt %d/%d): %s. Triggering reconnect and retrying...",
+                        self.entity_id,
+                        attempt + 1,
+                        max_retries + 1,
+                        err,
+                    )
+                    # Trigger reconnection attempt
+                    if hasattr(self.coordinator.device_client, "_ip_address"):
+                        asyncio.create_task(
+                            self.coordinator.device_client.async_login()
+                        )
+                    # Wait before retry
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 1.5  # Exponential backoff
+                else:
+                    # Final attempt failed
+                    raise

@@ -52,15 +52,15 @@ class AidotDeviceUpdateCoordinator(DataUpdateCoordinator[DeviceStatusData]):
 
     async def _async_setup(self) -> None:
         """Set up the coordinator."""
-        self.device_client.on_status_update = self._handle_status_update
+        self.device_client.set_status_fresh_cb(self._handle_status_update)
 
     def _handle_status_update(self, status: DeviceStatusData):
         """status callback"""
         self.async_set_updated_data(status)
+
     async def _async_update_data(self) -> DeviceStatusData:
         """Return current status."""
         return self.device_client.status
-
 
 
 class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
