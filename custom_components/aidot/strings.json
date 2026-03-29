@@ -20,5 +20,15 @@
         }
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "ip_address": {
+        "name": "IP Address"
+      },
+      "connection_status": {
+        "name": "Connection Status"
+      }
+    }
   }
 }
