@@ -1,7 +1,17 @@
 """Coordinator for Aidot."""
 
-from datetime import timedelta
+import asyncio
 import logging
+from datetime import timedelta
+
+from homeassistant.components.network import async_get_source_ip
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from aidot.client import AidotClient
 from aidot.const import (
@@ -13,15 +23,8 @@ from aidot.const import (
     CONF_TYPE,
 )
 from aidot.device_client import DeviceClient, DeviceStatusData
-from aidot.exceptions import AidotAuthFailed, AidotNotLogin, AidotUserOrPassIncorrect
-
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryError
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from aidot.discover import Discover
+from aidot.exceptions import AidotAuthFailed, AidotUserOrPassIncorrect
 
 from .const import DOMAIN
 
@@ -29,6 +32,51 @@ type AidotConfigEntry = ConfigEntry[AidotDeviceManagerCoordinator]
 _LOGGER = logging.getLogger(__name__)
 
 UPDATE_DEVICE_LIST_INTERVAL = timedelta(hours=6)
+
+
+async def _patch_discover_with_source_ip(
+    discover: Discover, source_ip: str | None
+) -> None:
+    """Patch the Discover object to use the correct network interface.
+
+    Replaces the default try_create_broadcast method to bind to the
+    specific source IP instead of 0.0.0.0.
+    """
+    if source_ip is None:
+        return
+
+    original_try_create_broadcast = discover.try_create_broadcast
+
+    async def patched_try_create_broadcast():
+        """Create broadcast endpoint bound to specific interface."""
+        if discover._broadcast_protocol is None:
+            from aidot.discover import BroadcastProtocol
+
+            discover._broadcast_protocol = BroadcastProtocol(
+                discover._discover_callback, discover._login_info[CONF_ID]
+            )
+            try:
+                (
+                    transport,
+                    protocol,
+                ) = await asyncio.get_event_loop().create_datagram_endpoint(
+                    lambda: discover._broadcast_protocol,
+                    local_addr=(source_ip, 0),  # Bind to specific IP instead of 0.0.0.0
+                )
+                _LOGGER.info(
+                    "Discovery bound to %s (will send broadcasts from this address)",
+                    source_ip,
+                )
+            except OSError as e:
+                _LOGGER.error(
+                    "Failed to bind discovery to %s: %s. Falling back to default.",
+                    source_ip,
+                    e,
+                )
+                # Fall back to original implementation
+                await original_try_create_broadcast()
+
+    discover.try_create_broadcast = patched_try_create_broadcast
 
 
 class AidotDeviceUpdateCoordinator(DataUpdateCoordinator[DeviceStatusData]):
@@ -95,10 +143,50 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
             await self.async_auto_login()
         except AidotUserOrPassIncorrect as error:
             raise ConfigEntryError from error
-        
+
+        # Get the correct source IP for discovery based on HA network config
+        source_ip = await async_get_source_ip(self.hass)
+
         # Start UDP broadcast discovery to find devices on the local network
-        self.client.start_discover()
-        _LOGGER.info("Started device discovery on local network")
+        _LOGGER.info(
+            "Starting device discovery on local network using source IP: %s",
+            source_ip or "default (0.0.0.0)",
+        )
+
+        # Create the discover object manually so we can patch it before starting
+        if self.client._discover is None:
+
+            def _discover_callback(dev_id, event: dict[str, str]) -> None:
+                device_ip = event["ipAddress"]
+                device_client = self.client._device_clients.get(dev_id)
+                if device_client is not None:
+                    device_client.update_ip_address(device_ip)
+                    _LOGGER.debug("Device %s discovered at IP %s", dev_id, device_ip)
+
+            self.client._discover = Discover(self.client.login_info, _discover_callback)
+
+            # Patch discovery to use the correct network interface BEFORE starting
+            if source_ip:
+                await _patch_discover_with_source_ip(self.client._discover, source_ip)
+
+            # Now start the broadcast task
+            asyncio.create_task(self.client._discover.repeat_broadcast())
+            _LOGGER.info("Device discovery broadcast task started")
+        else:
+            _LOGGER.warning("Discovery already started, skipping initialization")
+
+        # Give discovery a moment to send first broadcast and receive responses
+        await asyncio.sleep(3)
+
+        if self.client._discover:
+            discovered_count = len(self.client._discover.discovered_device)
+            _LOGGER.info(
+                "After 3s delay: Discovered %d device(s): %s",
+                discovered_count,
+                self.client._discover.discovered_device,
+            )
+        else:
+            _LOGGER.error("Discovery object is None after setup")
 
     async def _async_update_data(self) -> None:
         """Update data async."""
@@ -109,7 +197,7 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
             raise ConfigEntryError from error
         filter_device_list = [
             device
-            for device in data.get(CONF_DEVICE_LIST)
+            for device in data.get(CONF_DEVICE_LIST, [])
             if (
                 device[CONF_TYPE] == Platform.LIGHT
                 and CONF_AES_KEY in device
@@ -131,7 +219,20 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
         for device in filter_device_list:
             dev_id = device.get(CONF_ID)
             if dev_id not in self.device_coordinators:
+                _LOGGER.debug(
+                    "Creating device client for %s. Discovered IPs: %s",
+                    dev_id,
+                    self.client._discover.discovered_device
+                    if self.client._discover
+                    else "No discover",
+                )
                 device_client = self.client.get_device_client(device)
+                _LOGGER.debug(
+                    "Device client created for %s with IP: %s, connected: %s",
+                    dev_id,
+                    device_client._ip_address,
+                    device_client.connect_and_login,
+                )
                 device_coordinator = AidotDeviceUpdateCoordinator(
                     self.hass, self.config_entry, device_client
                 )
