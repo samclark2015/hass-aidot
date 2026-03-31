@@ -1,9 +1,7 @@
 """Coordinator for Aidot."""
 
-import asyncio
 from datetime import timedelta
 import logging
-import socket
 
 from aidot.client import AidotClient
 from aidot.const import (
@@ -15,7 +13,6 @@ from aidot.const import (
     CONF_TYPE,
 )
 from aidot.device_client import DeviceClient, DeviceStatusData
-from aidot.discover import Discover
 from aidot.exceptions import AidotAuthFailed, AidotNotLogin, AidotUserOrPassIncorrect
 
 from homeassistant.config_entries import ConfigEntry
@@ -25,7 +22,6 @@ from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-from homeassistant.util.network import async_get_source_ip
 
 from .const import DOMAIN
 
@@ -33,67 +29,6 @@ type AidotConfigEntry = ConfigEntry[AidotDeviceManagerCoordinator]
 _LOGGER = logging.getLogger(__name__)
 
 UPDATE_DEVICE_LIST_INTERVAL = timedelta(hours=6)
-
-
-async def _get_discovery_source_ip(hass: HomeAssistant) -> str | None:
-    """Get the source IP address for UDP broadcast discovery.
-    
-    Uses HomeAssistant's network configuration to determine which
-    interface should be used for local network discovery.
-    """
-    try:
-        # Get the source IP that would be used to reach a local address
-        # Using 192.168.1.1 as a representative local address
-        source_ip = await async_get_source_ip(hass, target_ip="192.168.1.1")
-        _LOGGER.debug("Discovery will use source IP: %s", source_ip)
-        return source_ip
-    except Exception as e:
-        _LOGGER.warning(
-            "Could not determine source IP for discovery, will use default (0.0.0.0): %s", 
-            e
-        )
-        return None
-
-
-async def _patch_discover_with_source_ip(
-    discover: Discover, source_ip: str | None
-) -> None:
-    """Patch the Discover object to use the correct network interface.
-    
-    Replaces the default try_create_broadcast method to bind to the
-    specific source IP instead of 0.0.0.0.
-    """
-    if source_ip is None:
-        return
-    
-    original_try_create_broadcast = discover.try_create_broadcast
-    
-    async def patched_try_create_broadcast():
-        """Create broadcast endpoint bound to specific interface."""
-        if discover._broadcast_protocol is None:
-            from aidot.discover import BroadcastProtocol
-            discover._broadcast_protocol = BroadcastProtocol(
-                discover._discover_callback, discover._login_info[CONF_ID]
-            )
-            try:
-                (transport, protocol) = await asyncio.get_event_loop().create_datagram_endpoint(
-                    lambda: discover._broadcast_protocol,
-                    local_addr=(source_ip, 0),  # Bind to specific IP instead of 0.0.0.0
-                )
-                _LOGGER.info(
-                    "Discovery bound to %s (will send broadcasts from this address)",
-                    source_ip
-                )
-            except OSError as e:
-                _LOGGER.error(
-                    "Failed to bind discovery to %s: %s. Falling back to default.",
-                    source_ip,
-                    e
-                )
-                # Fall back to original implementation
-                await original_try_create_broadcast()
-    
-    discover.try_create_broadcast = patched_try_create_broadcast
 
 
 class AidotDeviceUpdateCoordinator(DataUpdateCoordinator[DeviceStatusData]):
@@ -161,25 +96,17 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
         except AidotUserOrPassIncorrect as error:
             raise ConfigEntryError from error
         
-        # Get the correct source IP for discovery based on HA network config
-        source_ip = await _get_discovery_source_ip(self.hass)
-        
         # Start UDP broadcast discovery to find devices on the local network
         _LOGGER.info("Starting device discovery on local network...")
         self.client.start_discover()
+        _LOGGER.info(
+            "Device discovery started. Discover object: %s, Client has %d device clients",
+            self.client._discover,
+            len(self.client._device_clients),
+        )
         
-        # Patch discovery to use the correct network interface
-        if self.client._discover:
-            await _patch_discover_with_source_ip(self.client._discover, source_ip)
-            _LOGGER.info(
-                "Device discovery started. Discover object: %s, Source IP: %s",
-                self.client._discover,
-                source_ip or "default (0.0.0.0)",
-            )
-        else:
-            _LOGGER.error("Failed to start discovery - discover object is None")
-        
-        # Give discovery a moment to start and send first broadcast
+        # Give discovery a moment to start
+        import asyncio
         await asyncio.sleep(2)
         _LOGGER.info(
             "After 2s delay: Discovered devices: %s",
