@@ -73,8 +73,9 @@ async def _patch_discover_with_source_ip(
                     lambda: discover._broadcast_protocol,
                     local_addr=(source_ip, 0),  # Bind to specific IP instead of 0.0.0.0
                 )
-                # Store transport for cleanup
+                # Store transport for cleanup AND set it on the protocol object
                 discover._transport = transport
+                discover._broadcast_protocol.transport = transport
                 _LOGGER.info(
                     "Discovery bound to %s (will send broadcasts from this address)",
                     source_ip,
@@ -261,7 +262,7 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
         for i in range(DISCOVERY_STARTUP_BURST_COUNT):
             if self.client._discover:
                 await self.client._discover.try_create_broadcast()
-                self.client._discover.send_broadcast()
+                await self.client._discover.send_broadcast()
                 _LOGGER.debug(
                     "Startup discovery broadcast %d/%d sent",
                     i + 1,
