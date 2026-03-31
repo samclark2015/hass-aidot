@@ -95,6 +95,10 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
             await self.async_auto_login()
         except AidotUserOrPassIncorrect as error:
             raise ConfigEntryError from error
+        
+        # Start UDP broadcast discovery to find devices on the local network
+        self.client.start_discover()
+        _LOGGER.info("Started device discovery on local network")
 
     async def _async_update_data(self) -> None:
         """Update data async."""
