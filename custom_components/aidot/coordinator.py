@@ -62,20 +62,20 @@ async def _patch_discover_with_source_ip(
         if discover._broadcast_protocol is None:
             from aidot.discover import BroadcastProtocol
 
-            discover._broadcast_protocol = BroadcastProtocol(
-                discover._discover_callback, discover._login_info[CONF_ID]
-            )
             try:
                 (
                     transport,
                     protocol,
                 ) = await asyncio.get_event_loop().create_datagram_endpoint(
-                    lambda: discover._broadcast_protocol,
+                    lambda: BroadcastProtocol(
+                        discover._discover_callback, discover._login_info[CONF_ID]
+                    ),
                     local_addr=(source_ip, 0),  # Bind to specific IP instead of 0.0.0.0
                 )
-                # Store transport for cleanup AND set it on the protocol object
+                # Store the protocol instance that was actually created and connected
+                discover._broadcast_protocol = protocol
+                # Store transport for cleanup
                 discover._transport = transport
-                discover._broadcast_protocol.transport = transport
                 _LOGGER.info(
                     "Discovery bound to %s (will send broadcasts from this address)",
                     source_ip,
