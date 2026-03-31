@@ -134,7 +134,8 @@ class AidotLight(CoordinatorEntity[AidotDeviceUpdateCoordinator], LightEntity):
         """Turn the light on."""
         attrs = {CONF_ON_OFF: 1}
         if ATTR_BRIGHTNESS in kwargs:
-            attrs[CONF_DIMMING] = kwargs[ATTR_BRIGHTNESS]
+            # Convert Home Assistant brightness (0-255) to device percentage (0-100)
+            attrs[CONF_DIMMING] = int(kwargs[ATTR_BRIGHTNESS] * 100 / 255)
         if ATTR_COLOR_TEMP_KELVIN in kwargs:
             self._attr_color_mode = ColorMode.COLOR_TEMP
             attrs[CONF_CCT] = kwargs[ATTR_COLOR_TEMP_KELVIN]
