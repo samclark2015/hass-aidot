@@ -143,6 +143,17 @@ class AidotDeviceUpdateCoordinator(DataUpdateCoordinator[DeviceStatusData]):
             _LOGGER.debug("No IP address for device %s", self.device_client.device_id)
             return False
 
+        # Check if already connected and has valid status
+        if self.device_client.connect_and_login and self.device_client.status.online:
+            # Already connected with valid status - mark as received and return success
+            if not self._initial_status_received:
+                _LOGGER.debug(
+                    "Device %s already connected with valid status, marking as received",
+                    self.device_client.device_id,
+                )
+                self._initial_status_received = True
+            return True
+
         # Attempt connection if not already connected
         if not self.device_client.connect_and_login:
             try:
@@ -173,10 +184,11 @@ class AidotDeviceUpdateCoordinator(DataUpdateCoordinator[DeviceStatusData]):
             await asyncio.sleep(0.25)
 
         _LOGGER.debug(
-            "Status timeout for device %s (connected=%s, online=%s)",
+            "Status timeout for device %s (connected=%s, online=%s, initial_received=%s)",
             self.device_client.device_id,
             self.device_client.connect_and_login,
             self.device_client.status.online,
+            self._initial_status_received,
         )
         return False
 
@@ -344,7 +356,7 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
             # Send discovery broadcast to find device IPs
             if self.client._discover:
                 await self.client._discover.try_create_broadcast()
-                self.client._discover.send_broadcast()
+                await self.client._discover.send_broadcast()
 
     def _handle_reconnect_task_done(self, task: asyncio.Task) -> None:
         """Handle reconnect task completion or failure."""
