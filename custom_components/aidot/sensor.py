@@ -95,6 +95,14 @@ class AidotIPAddressSensor(AidotDiagnosticSensor):
         super().__init__(coordinator, "ip_address")
 
     @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # IP sensor is available even when device is disconnected
+        # (we might know the IP from discovery)
+        wrapper = DeviceClientWrapper(self.coordinator.device_client)
+        return wrapper.ip_address is not None
+
+    @property
     def native_value(self) -> str | None:
         """Return the IP address."""
         wrapper = DeviceClientWrapper(self.coordinator.device_client)
@@ -112,6 +120,12 @@ class AidotConnectionStatusSensor(AidotDiagnosticSensor):
     ) -> None:
         """Initialize the connection status sensor."""
         super().__init__(coordinator, "connection_status")
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Connection status sensor is always available
+        return True
 
     @property
     def native_value(self) -> str:

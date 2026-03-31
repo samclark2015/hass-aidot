@@ -119,11 +119,19 @@ class AidotLight(CoordinatorEntity[AidotDeviceUpdateCoordinator], LightEntity):
         self._update_status()
 
     def _update_status(self) -> None:
-        self._attr_available = self.coordinator.data.online
-        self._attr_is_on = self.coordinator.data.on
-        self._attr_brightness = self.coordinator.data.dimming
-        self._attr_color_temp_kelvin = self.coordinator.data.cct
-        self._attr_rgbw_color = self.coordinator.data.rgbw
+        """Update entity state from coordinator data."""
+        # Available only if device is connected and online
+        self._attr_available = (
+            self.coordinator.is_connected
+            and self.coordinator.data is not None
+            and self.coordinator.data.online
+        )
+
+        if self.coordinator.data:
+            self._attr_is_on = self.coordinator.data.on
+            self._attr_brightness = self.coordinator.data.dimming
+            self._attr_color_temp_kelvin = self.coordinator.data.cct
+            self._attr_rgbw_color = self.coordinator.data.rgbw
 
     @callback
     def _handle_coordinator_update(self) -> None:
