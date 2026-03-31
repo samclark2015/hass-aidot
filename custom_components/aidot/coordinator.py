@@ -97,8 +97,21 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
             raise ConfigEntryError from error
         
         # Start UDP broadcast discovery to find devices on the local network
+        _LOGGER.info("Starting device discovery on local network...")
         self.client.start_discover()
-        _LOGGER.info("Started device discovery on local network")
+        _LOGGER.info(
+            "Device discovery started. Discover object: %s, Client has %d device clients",
+            self.client._discover,
+            len(self.client._device_clients),
+        )
+        
+        # Give discovery a moment to start
+        import asyncio
+        await asyncio.sleep(2)
+        _LOGGER.info(
+            "After 2s delay: Discovered devices: %s",
+            self.client._discover.discovered_device if self.client._discover else "None",
+        )
 
     async def _async_update_data(self) -> None:
         """Update data async."""
@@ -131,7 +144,18 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
         for device in filter_device_list:
             dev_id = device.get(CONF_ID)
             if dev_id not in self.device_coordinators:
+                _LOGGER.debug(
+                    "Creating device client for %s. Discovered IPs: %s",
+                    dev_id,
+                    self.client._discover.discovered_device if self.client._discover else "No discover",
+                )
                 device_client = self.client.get_device_client(device)
+                _LOGGER.debug(
+                    "Device client created for %s with IP: %s, connected: %s",
+                    dev_id,
+                    device_client._ip_address,
+                    device_client.connect_and_login,
+                )
                 device_coordinator = AidotDeviceUpdateCoordinator(
                     self.hass, self.config_entry, device_client
                 )
