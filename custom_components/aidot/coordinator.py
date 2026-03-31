@@ -180,8 +180,20 @@ class AidotDeviceUpdateCoordinator(DataUpdateCoordinator[DeviceStatusData]):
         # Wait for initial status
         start_time = asyncio.get_event_loop().time()
         while asyncio.get_event_loop().time() - start_time < STATUS_WAIT_TIMEOUT:
+            # Check if callback was triggered
             if self._initial_status_received and self.device_client.status.online:
                 return True
+            
+            # Also check if device has valid status even without callback
+            # (handles case where status arrived before callback was registered)
+            if self.device_client.connect_and_login and self.device_client.status.online:
+                _LOGGER.debug(
+                    "Device %s has valid status without callback trigger, marking as received",
+                    self.device_client.device_id,
+                )
+                self._initial_status_received = True
+                return True
+            
             await asyncio.sleep(0.25)
 
         _LOGGER.debug(
