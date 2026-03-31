@@ -29,7 +29,9 @@ from homeassistant.util.network import async_get_source_ip
 
 from .const import DOMAIN
 
-type AidotConfigEntry = ConfigEntry[AidotDeviceManagerCoordinator]
+# Type alias for config entry
+AidotConfigEntry = ConfigEntry["AidotDeviceManagerCoordinator"]
+
 _LOGGER = logging.getLogger(__name__)
 
 UPDATE_DEVICE_LIST_INTERVAL = timedelta(hours=6)
