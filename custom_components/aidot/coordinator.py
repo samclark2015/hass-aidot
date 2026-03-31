@@ -245,7 +245,24 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
             if source_ip:
                 await _patch_discover_with_source_ip(self.client._discover, source_ip)
 
-            # Start the ongoing broadcast task
+            # Initialize the broadcast protocol BEFORE starting repeat_broadcast task
+            # This ensures our patched version creates the protocol first
+            _LOGGER.debug("Initializing discovery broadcast protocol")
+            await self.client._discover.try_create_broadcast()
+            
+            # Give connection_made() callback time to complete
+            await asyncio.sleep(0.1)
+            
+            # Verify protocol has transport before proceeding
+            if (
+                self.client._discover._broadcast_protocol is not None
+                and hasattr(self.client._discover._broadcast_protocol, "transport")
+            ):
+                _LOGGER.info("Discovery protocol initialized successfully")
+            else:
+                _LOGGER.warning("Discovery protocol may not be fully initialized")
+
+            # Start the ongoing broadcast task (now that protocol exists)
             self._discovery_task = asyncio.create_task(
                 self.client._discover.repeat_broadcast()
             )
@@ -261,7 +278,7 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
         )
         for i in range(DISCOVERY_STARTUP_BURST_COUNT):
             if self.client._discover:
-                await self.client._discover.try_create_broadcast()
+                # Don't call try_create_broadcast again - protocol already exists
                 await self.client._discover.send_broadcast()
                 _LOGGER.debug(
                     "Startup discovery broadcast %d/%d sent",
