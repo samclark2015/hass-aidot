@@ -231,5 +231,12 @@ class AidotLight(CoordinatorEntity[AidotDeviceUpdateCoordinator], LightEntity):
                     await asyncio.sleep(retry_delay)
                     retry_delay *= COMMAND_RETRY_BACKOFF_FACTOR
                 else:
-                    # Final attempt failed
+                    # Final attempt failed - mark device as unavailable
+                    _LOGGER.error(
+                        "Device %s is offline after %d attempts",
+                        self.entity_id,
+                        max_retries + 1,
+                    )
+                    # Trigger coordinator update to reflect offline status
+                    self.coordinator.async_set_updated_data(self.coordinator.device_client.status)
                     raise

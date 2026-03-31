@@ -27,16 +27,16 @@ from aidot.discover import Discover
 from aidot.exceptions import AidotAuthFailed, AidotUserOrPassIncorrect
 
 from .const import (
-    DOMAIN,
+    CONNECTION_TIMEOUT,
     DISCOVERY_INITIAL_DELAY,
     DISCOVERY_STARTUP_BURST_COUNT,
     DISCOVERY_STARTUP_BURST_INTERVAL,
+    DOMAIN,
     RECONNECT_INTERVAL,
-    CONNECTION_TIMEOUT,
     STATUS_WAIT_TIMEOUT,
     UPDATE_DEVICE_LIST_INTERVAL_HOURS,
 )
-from .device_wrapper import DiscoverWrapper, DeviceClientWrapper
+from .device_wrapper import DeviceClientWrapper, DiscoverWrapper
 
 type AidotConfigEntry = ConfigEntry[AidotDeviceManagerCoordinator]
 _LOGGER = logging.getLogger(__name__)
@@ -364,8 +364,28 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
 
     async def _reconnect_loop(self) -> None:
         """Periodically attempt to reconnect disconnected devices."""
+        # Track previously known connection states
+        previous_states = {}
+
         while True:
             await asyncio.sleep(RECONNECT_INTERVAL)
+
+            # Check all devices for connection state changes
+            for dev_id, coord in self.device_coordinators.items():
+                is_connected = coord.is_connected
+                was_connected = previous_states.get(dev_id, None)
+
+                # Detect transition from connected to disconnected
+                if was_connected is True and is_connected is False:
+                    _LOGGER.warning(
+                        "Device %s has disconnected (was online, now offline)",
+                        dev_id,
+                    )
+                    # Trigger coordinator update to mark entity as unavailable
+                    coord.async_set_updated_data(coord.device_client.status)
+
+                # Update tracked state
+                previous_states[dev_id] = is_connected
 
             # Find disconnected devices
             disconnected = [
