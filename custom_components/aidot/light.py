@@ -1,6 +1,5 @@
 """Support for Aidot lights."""
 
-import asyncio
 import logging
 from typing import Any
 
@@ -24,14 +23,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from aidot.const import CONF_CCT, CONF_DIMMING, CONF_ON_OFF, CONF_RGBW
 
-from .const import (
-    DOMAIN,
-    COMMAND_MAX_RETRIES,
-    COMMAND_RETRY_BASE_DELAY,
-    COMMAND_RETRY_BACKOFF_FACTOR,
-)
+from .const import DOMAIN
 from .coordinator import AidotConfigEntry, AidotDeviceUpdateCoordinator
-from .device_wrapper import DeviceClientWrapper
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -118,15 +111,13 @@ class AidotLight(CoordinatorEntity[AidotDeviceUpdateCoordinator], LightEntity):
             self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
         self._update_status()
 
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return self.coordinator.is_connected
+
     def _update_status(self) -> None:
         """Update entity state from coordinator data."""
-        # Available only if device is connected and online
-        self._attr_available = (
-            self.coordinator.is_connected
-            and self.coordinator.data is not None
-            and self.coordinator.data.online
-        )
-
         if self.coordinator.data:
             self._attr_is_on = self.coordinator.data.on
             self._attr_brightness = self.coordinator.data.dimming
@@ -159,14 +150,15 @@ class AidotLight(CoordinatorEntity[AidotDeviceUpdateCoordinator], LightEntity):
         self.async_write_ha_state()
 
         try:
-            await self._send_command_with_retry(attrs)
+            await self.coordinator.device_client.send_dev_attr(attrs)
         except ConnectionError as err:
             # Revert optimistic state on failure
             self.coordinator.data.on = False
             self._attr_is_on = False
-            self.async_write_ha_state()
+            # Mark device as disconnected
+            self.coordinator.async_set_updated_data(self.coordinator.device_client.status)
             _LOGGER.error(
-                "Failed to turn on %s after retry: %s",
+                "Failed to turn on %s: %s",
                 self.entity_id,
                 err,
             )
@@ -180,63 +172,18 @@ class AidotLight(CoordinatorEntity[AidotDeviceUpdateCoordinator], LightEntity):
         self.async_write_ha_state()
 
         try:
-            await self._send_command_with_retry({CONF_ON_OFF: 0})
+            await self.coordinator.device_client.send_dev_attr({CONF_ON_OFF: 0})
         except ConnectionError as err:
             # Revert optimistic state on failure
             self.coordinator.data.on = True
             self._attr_is_on = True
-            self.async_write_ha_state()
+            # Mark device as disconnected
+            self.coordinator.async_set_updated_data(self.coordinator.device_client.status)
             _LOGGER.error(
-                "Failed to turn off %s after retry: %s",
+                "Failed to turn off %s: %s",
                 self.entity_id,
                 err,
             )
             raise HomeAssistantError(f"Failed to turn off light: {err}") from err
 
-    async def _send_command_with_retry(self, attrs: dict[str, Any]) -> None:
-        """Send command with automatic retry on connection failure."""
-        max_retries = COMMAND_MAX_RETRIES
-        retry_delay = COMMAND_RETRY_BASE_DELAY
 
-        for attempt in range(max_retries + 1):
-            try:
-                await self.coordinator.device_client.send_dev_attr(attrs)
-                return  # Success!
-            except ConnectionError as err:
-                if attempt < max_retries:
-                    _LOGGER.warning(
-                        "Command failed for %s (attempt %d/%d): %s. Triggering reconnect and retrying...",
-                        self.entity_id,
-                        attempt + 1,
-                        max_retries + 1,
-                        err,
-                    )
-                    # Trigger reconnection attempt with proper error handling
-                    wrapper = DeviceClientWrapper(self.coordinator.device_client)
-                    if wrapper.ip_address:
-                        
-                        async def reconnect_with_logging():
-                            """Reconnect with error logging."""
-                            try:
-                                await self.coordinator.device_client.async_login()
-                            except Exception as reconnect_err:
-                                _LOGGER.error(
-                                    "Reconnection attempt failed for %s: %s",
-                                    self.entity_id,
-                                    reconnect_err,
-                                )
-                        
-                        self.hass.async_create_task(reconnect_with_logging())
-                    # Wait before retry
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= COMMAND_RETRY_BACKOFF_FACTOR
-                else:
-                    # Final attempt failed - mark device as unavailable
-                    _LOGGER.error(
-                        "Device %s is offline after %d attempts",
-                        self.entity_id,
-                        max_retries + 1,
-                    )
-                    # Trigger coordinator update to reflect offline status
-                    self.coordinator.async_set_updated_data(self.coordinator.device_client.status)
-                    raise
