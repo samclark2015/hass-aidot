@@ -26,12 +26,13 @@ from aidot.device_client import DeviceClient, DeviceStatusData
 from aidot.discover import Discover
 from aidot.exceptions import AidotAuthFailed, AidotUserOrPassIncorrect
 
-from .const import DOMAIN
+from .const import DOMAIN, DISCOVERY_INITIAL_DELAY, UPDATE_DEVICE_LIST_INTERVAL_HOURS
+from .device_wrapper import DiscoverWrapper
 
 type AidotConfigEntry = ConfigEntry[AidotDeviceManagerCoordinator]
 _LOGGER = logging.getLogger(__name__)
 
-UPDATE_DEVICE_LIST_INTERVAL = timedelta(hours=6)
+UPDATE_DEVICE_LIST_INTERVAL = timedelta(hours=UPDATE_DEVICE_LIST_INTERVAL_HOURS)
 
 
 async def _patch_discover_with_source_ip(
@@ -63,6 +64,8 @@ async def _patch_discover_with_source_ip(
                     lambda: discover._broadcast_protocol,
                     local_addr=(source_ip, 0),  # Bind to specific IP instead of 0.0.0.0
                 )
+                # Store transport for cleanup
+                discover._transport = transport
                 _LOGGER.info(
                     "Discovery bound to %s (will send broadcasts from this address)",
                     source_ip,
@@ -136,6 +139,7 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
         self.client.set_token_fresh_cb(self.token_fresh_cb)
         self.device_coordinators: dict[str, AidotDeviceUpdateCoordinator] = {}
         self.previous_lists: set[str] = set()
+        self._discovery_task: asyncio.Task | None = None
 
     async def _async_setup(self) -> None:
         """Set up the coordinator."""
@@ -170,20 +174,25 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
                 await _patch_discover_with_source_ip(self.client._discover, source_ip)
 
             # Now start the broadcast task
-            asyncio.create_task(self.client._discover.repeat_broadcast())
+            self._discovery_task = asyncio.create_task(
+                self.client._discover.repeat_broadcast()
+            )
+            self._discovery_task.add_done_callback(self._handle_discovery_task_done)
             _LOGGER.info("Device discovery broadcast task started")
         else:
             _LOGGER.warning("Discovery already started, skipping initialization")
 
         # Give discovery a moment to send first broadcast and receive responses
-        await asyncio.sleep(3)
+        await asyncio.sleep(DISCOVERY_INITIAL_DELAY)
 
         if self.client._discover:
-            discovered_count = len(self.client._discover.discovered_device)
+            wrapper = DiscoverWrapper(self.client._discover)
+            discovered_count = len(wrapper.discovered_devices)
             _LOGGER.info(
-                "After 3s delay: Discovered %d device(s): %s",
+                "After %.1fs delay: Discovered %d device(s): %s",
+                DISCOVERY_INITIAL_DELAY,
                 discovered_count,
-                self.client._discover.discovered_device,
+                wrapper.discovered_devices,
             )
         else:
             _LOGGER.error("Discovery object is None after setup")
@@ -222,9 +231,11 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
                 _LOGGER.debug(
                     "Creating device client for %s. Discovered IPs: %s",
                     dev_id,
-                    self.client._discover.discovered_device
-                    if self.client._discover
-                    else "No discover",
+                    (
+                        DiscoverWrapper(self.client._discover).discovered_devices
+                        if self.client._discover
+                        else "No discover"
+                    ),
                 )
                 device_client = self.client.get_device_client(device)
                 _LOGGER.debug(
@@ -241,7 +252,28 @@ class AidotDeviceManagerCoordinator(DataUpdateCoordinator[None]):
 
     def cleanup(self) -> None:
         """Perform cleanup actions."""
+        if self._discovery_task and not self._discovery_task.done():
+            self._discovery_task.cancel()
+        
+        # Close the discovery transport if it was created
+        if self.client._discover:
+            wrapper = DiscoverWrapper(self.client._discover)
+            if wrapper.has_transport:
+                transport = wrapper.get_transport()
+                if transport and not transport.is_closing():
+                    transport.close()
+                    _LOGGER.debug("Closed discovery UDP transport")
+        
         self.client.cleanup()
+
+    def _handle_discovery_task_done(self, task: asyncio.Task) -> None:
+        """Handle discovery task completion or failure."""
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            _LOGGER.debug("Discovery task was cancelled")
+        except Exception:
+            _LOGGER.exception("Discovery task failed with unexpected error")
 
     def token_fresh_cb(self) -> None:
         """Update token."""

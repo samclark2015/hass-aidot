@@ -1,7 +1,8 @@
 """Support for Aidot diagnostic sensors."""
 
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
+from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -9,6 +10,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import AidotConfigEntry, AidotDeviceUpdateCoordinator
+from .device_wrapper import DeviceClientWrapper
 
 
 async def async_setup_entry(
@@ -35,12 +37,25 @@ async def async_setup_entry(
                 device_coordinator = coordinator.device_coordinators[device_id]
                 entities.extend(
                     [
-                        AidotIPAddressSensor(hass, device_coordinator),
-                        AidotConnectionStatusSensor(hass, device_coordinator),
+                        AidotIPAddressSensor(device_coordinator),
+                        AidotConnectionStatusSensor(device_coordinator),
                     ]
                 )
             async_add_entities(entities)
             lists_added |= new_lists
+        elif lists_added - new_lists:
+            # Remove entities for devices that no longer exist
+            removed_device_ids = lists_added - new_lists
+            entity_registry = er.async_get(hass)
+            for device_id in removed_device_ids:
+                # Remove both sensor types for this device
+                for sensor_type in ["ip_address", "connection_status"]:
+                    entity_id = entity_registry.async_get_entity_id(
+                        "sensor", DOMAIN, f"{device_id}_{sensor_type}"
+                    )
+                    if entity_id:
+                        entity_registry.async_remove(entity_id)
+            lists_added -= removed_device_ids
 
     coordinator.async_add_listener(add_entities)
     add_entities()
@@ -56,7 +71,6 @@ class AidotDiagnosticSensor(
 
     def __init__(
         self,
-        hass: HomeAssistant,
         coordinator: AidotDeviceUpdateCoordinator,
         sensor_type: str,
     ) -> None:
@@ -75,17 +89,16 @@ class AidotIPAddressSensor(AidotDiagnosticSensor):
     _attr_icon = "mdi:ip-network"
 
     def __init__(
-        self, hass: HomeAssistant, coordinator: AidotDeviceUpdateCoordinator
+        self, coordinator: AidotDeviceUpdateCoordinator
     ) -> None:
         """Initialize the IP address sensor."""
-        super().__init__(hass, coordinator, "ip_address")
+        super().__init__(coordinator, "ip_address")
 
     @property
     def native_value(self) -> str | None:
         """Return the IP address."""
-        if hasattr(self.coordinator.device_client, "_ip_address"):
-            return self.coordinator.device_client._ip_address
-        return None
+        wrapper = DeviceClientWrapper(self.coordinator.device_client)
+        return wrapper.ip_address
 
 
 class AidotConnectionStatusSensor(AidotDiagnosticSensor):
@@ -95,17 +108,18 @@ class AidotConnectionStatusSensor(AidotDiagnosticSensor):
     _attr_icon = "mdi:connection"
 
     def __init__(
-        self, hass: HomeAssistant, coordinator: AidotDeviceUpdateCoordinator
+        self, coordinator: AidotDeviceUpdateCoordinator
     ) -> None:
         """Initialize the connection status sensor."""
-        super().__init__(hass, coordinator, "connection_status")
+        super().__init__(coordinator, "connection_status")
 
     @property
     def native_value(self) -> str:
         """Return the connection status."""
-        if self.coordinator.device_client.connect_and_login:
+        wrapper = DeviceClientWrapper(self.coordinator.device_client)
+        if wrapper.is_connected:
             return "Connected"
-        elif self.coordinator.device_client.connecting:
+        elif wrapper.is_connecting:
             return "Connecting"
         else:
             return "Disconnected"
@@ -113,9 +127,10 @@ class AidotConnectionStatusSensor(AidotDiagnosticSensor):
     @property
     def icon(self) -> str:
         """Return the icon based on connection status."""
-        if self.coordinator.device_client.connect_and_login:
+        wrapper = DeviceClientWrapper(self.coordinator.device_client)
+        if wrapper.is_connected:
             return "mdi:lan-connect"
-        elif self.coordinator.device_client.connecting:
+        elif wrapper.is_connecting:
             return "mdi:lan-pending"
         else:
             return "mdi:lan-disconnect"

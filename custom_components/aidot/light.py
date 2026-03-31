@@ -13,7 +13,7 @@ from homeassistant.components.light import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import entity_registry as er  # 导入实体注册表
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import (
     CONNECTION_NETWORK_MAC,
     DeviceInfo,
@@ -24,10 +24,19 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from aidot.const import CONF_CCT, CONF_DIMMING, CONF_ON_OFF, CONF_RGBW
 
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    COMMAND_MAX_RETRIES,
+    COMMAND_RETRY_BASE_DELAY,
+    COMMAND_RETRY_BACKOFF_FACTOR,
+)
 from .coordinator import AidotConfigEntry, AidotDeviceUpdateCoordinator
+from .device_wrapper import DeviceClientWrapper
 
 _LOGGER = logging.getLogger(__name__)
+
+# Limit concurrent updates to prevent command conflicts
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
@@ -50,7 +59,7 @@ async def async_setup_entry(
 
         if new_lists - lists_added:
             async_add_entities(
-                AidotLight(hass, coordinator.device_coordinators[device_id])
+                AidotLight(coordinator.device_coordinators[device_id])
                 for device_id in new_lists
             )
             lists_added |= new_lists
@@ -75,7 +84,7 @@ class AidotLight(CoordinatorEntity[AidotDeviceUpdateCoordinator], LightEntity):
     _attr_name = None
 
     def __init__(
-        self, hass: HomeAssistant, coordinator: AidotDeviceUpdateCoordinator
+        self, coordinator: AidotDeviceUpdateCoordinator
     ) -> None:
         """Initialize the light."""
         super().__init__(coordinator)
@@ -178,8 +187,8 @@ class AidotLight(CoordinatorEntity[AidotDeviceUpdateCoordinator], LightEntity):
 
     async def _send_command_with_retry(self, attrs: dict[str, Any]) -> None:
         """Send command with automatic retry on connection failure."""
-        max_retries = 2
-        retry_delay = 1.0
+        max_retries = COMMAND_MAX_RETRIES
+        retry_delay = COMMAND_RETRY_BASE_DELAY
 
         for attempt in range(max_retries + 1):
             try:
@@ -194,14 +203,25 @@ class AidotLight(CoordinatorEntity[AidotDeviceUpdateCoordinator], LightEntity):
                         max_retries + 1,
                         err,
                     )
-                    # Trigger reconnection attempt
-                    if hasattr(self.coordinator.device_client, "_ip_address"):
-                        asyncio.create_task(
-                            self.coordinator.device_client.async_login()
-                        )
+                    # Trigger reconnection attempt with proper error handling
+                    wrapper = DeviceClientWrapper(self.coordinator.device_client)
+                    if wrapper.ip_address:
+                        
+                        async def reconnect_with_logging():
+                            """Reconnect with error logging."""
+                            try:
+                                await self.coordinator.device_client.async_login()
+                            except Exception as reconnect_err:
+                                _LOGGER.error(
+                                    "Reconnection attempt failed for %s: %s",
+                                    self.entity_id,
+                                    reconnect_err,
+                                )
+                        
+                        self.hass.async_create_task(reconnect_with_logging())
                     # Wait before retry
                     await asyncio.sleep(retry_delay)
-                    retry_delay *= 1.5  # Exponential backoff
+                    retry_delay *= COMMAND_RETRY_BACKOFF_FACTOR
                 else:
                     # Final attempt failed
                     raise

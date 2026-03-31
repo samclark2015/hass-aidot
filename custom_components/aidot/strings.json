@@ -4,7 +4,9 @@
       "already_configured": "The account in the current region has already been configured"
     },
     "error": {
-      "invalid_auth": "Authentication failed, please ensure that the network is functioning properly and the account password is correct."
+      "invalid_auth": "Authentication failed, please ensure that the network is functioning properly and the account password is correct.",
+      "cannot_connect": "Unable to connect to the AiDot service. Please check your internet connection and try again.",
+      "unknown": "An unexpected error occurred. Please check the logs for more details."
     },
     "step": {
       "user": {
